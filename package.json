@@ -11,6 +11,16 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "express": "^5.1.0"
+    "axios": "^1.9.0",
+    "child_process": "^1.0.2",
+    "cors": "^2.8.5",
+    "cron": "^4.3.0",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "geoip-lite": "^1.4.10",
+    "node-cron": "^3.0.3",
+    "os": "^0.1.2",
+    "pg": "^8.15.6",
+    "util": "^0.12.5"
   }
 }
