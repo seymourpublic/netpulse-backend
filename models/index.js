@@ -17,3 +17,31 @@ const sequelize = new Sequelize(
     }
   }
 );
+
+const SpeedTest = require('./speedTest')(sequelize);
+const ISP = require('./isp')(sequelize);
+const NetworkOutage = require('./networkOutage')(sequelize);
+const UserSession = require('./userSession')(sequelize);
+const ServerNode = require('./serverNode')(sequelize);
+
+// Define associations
+SpeedTest.belongsTo(ISP, { foreignKey: 'ispId' });
+ISP.hasMany(SpeedTest, { foreignKey: 'ispId' });
+
+SpeedTest.belongsTo(UserSession, { foreignKey: 'sessionId' });
+UserSession.hasMany(SpeedTest, { foreignKey: 'sessionId' });
+
+SpeedTest.belongsTo(ServerNode, { foreignKey: 'serverNodeId' });
+ServerNode.hasMany(SpeedTest, { foreignKey: 'serverNodeId' });
+
+NetworkOutage.belongsTo(ISP, { foreignKey: 'ispId' });
+ISP.hasMany(NetworkOutage, { foreignKey: 'ispId' });
+
+module.exports = {
+  sequelize,
+  SpeedTest,
+  ISP,
+  NetworkOutage,
+  UserSession,
+  ServerNode
+};
