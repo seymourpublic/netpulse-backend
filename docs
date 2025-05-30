@@ -1,0 +1,63 @@
+# NETPULSE API Documentation
+
+## Base URL
+\`http://localhost:5000/api\`
+
+## Endpoints
+
+### Speed Tests
+- \`POST /speed-test/run\` - Run a new speed test
+- \`GET /speed-test/history\` - Get test history for a session
+- \`GET /speed-test/:testId\` - Get specific test details
+
+### ISP Management
+- \`GET /isp/rankings\` - Get ISP performance rankings
+- \`GET /isp/:ispId\` - Get detailed ISP information
+
+### Analytics
+- \`GET /analytics/trends\` - Get performance trends over time
+- \`GET /analytics/peak-hours\` - Get peak hours analysis
+- \`GET /analytics/regional\` - Get regional performance comparison
+
+### Monitoring
+- \`GET /monitoring/outages\` - Get network outages
+- \`POST /monitoring/outages/report\` - Report a new outage
+- \`PATCH /monitoring/outages/:outageId/resolve\` - Resolve an outage
+- \`GET /monitoring/health\` - Get system health status
+
+## WebSocket Events
+- \`subscribe\` - Subscribe to real-time updates
+- \`speedtest_start\` - Speed test started
+- \`speedtest_progress\` - Speed test progress update
+- \`speedtest_complete\` - Speed test completed
+
+## Authentication
+Most endpoints require a session token passed in the request body or headers.
+
+## Rate Limiting
+- 100 requests per 15 minutes per IP address
+- Speed tests limited to 1 per minute per session
+
+## Error Responses
+All errors return JSON with \`error\` field and appropriate HTTP status codes.
+`;
+
+console.log('✅ NETPULSE Backend System Complete!');
+console.log('📁 Files to create:');
+console.log('- package.json');
+console.log('- server.js');
+console.log('- models/index.js, speedTest.js, isp.js, etc.');
+console.log('- routes/speedTest.js, isp.js, analytics.js, monitoring.js');
+console.log('- services/speedTestService.js, backgroundService.js, etc.');
+console.log('- scripts/migrate.js, seed.js');
+console.log('- .env (from .env.example)');
+console.log('- docker-compose.yml');
+console.log('- Dockerfile');
+console.log('');
+console.log('🚀 Setup Instructions:');
+console.log('1. npm install');
+console.log('2. Setup PostgreSQL database');
+console.log('3. Copy .env.example to .env and configure');
+console.log('4. npm run migrate');
+console.log('5. npm run seed');
+console.log('6. npm run dev');
