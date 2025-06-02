@@ -234,7 +234,7 @@ class CustomSpeedTestEngine {
           const bytes = arrayBuffer.byteLength;
 
           const chunkDuration = (performance.now() - chunkStart) / 1000; // seconds
-          const chunkSpeed = (bytes * 8) / (chunkDuration * 1000000); // Mbps
+          const chunkSpeed = (bytes * 8) / (1000000 * chunkDuration); // Mbps
 
           samples.push({
             timestamp: Date.now(),
