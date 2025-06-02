@@ -4,7 +4,7 @@ const { performance } = require('perf_hooks');
 class CustomSpeedTestEngine {
   constructor() {
     this.testServers = [
-      { id: 'localhost', host: 'localhost:3000', location: 'Local Test Server' },
+      { id: 'localhost', host: 'localhost:3001', location: 'Local Test Server' },
       { id: 'fallback', host: '127.0.0.1:3000', location: 'Local Fallback' }
     ];
     
