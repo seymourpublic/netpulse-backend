@@ -1,76 +1,67 @@
-const { DataTypes } = require('sequelize');
+const mongoose = require('mongoose');
 
-module.exports = (sequelize) => {
-  return sequelize.define('ISP', {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    name: {
-      type: DataTypes.STRING,
-      allowNull: false,
-      unique: true
-    },
-    displayName: {
-      type: DataTypes.STRING
-    },
-    country: {
-      type: DataTypes.STRING,
-      allowNull: false
-    },
-    region: {
-      type: DataTypes.STRING
-    },
-    asn: {
-      type: DataTypes.INTEGER,
-      unique: true
-    },
-    website: {
-      type: DataTypes.STRING
-    },
-    supportContact: {
-      type: DataTypes.STRING
-    },
+const ispSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  displayName: String,
+  country: {
+    type: String,
+    required: true
+  },
+  region: String,
+  asn: {
+    type: Number,
+    unique: true,
+    sparse: true // Allows multiple null values
+  },
+  website: String,
+  supportContact: String,
+  statistics: {
     averageDownload: {
-      type: DataTypes.FLOAT,
-      defaultValue: 0
+      type: Number,
+      default: 0
     },
     averageUpload: {
-      type: DataTypes.FLOAT,
-      defaultValue: 0
+      type: Number,
+      default: 0
     },
     averageLatency: {
-      type: DataTypes.FLOAT,
-      defaultValue: 0
+      type: Number,
+      default: 0
     },
     reliabilityScore: {
-      type: DataTypes.FLOAT,
-      defaultValue: 0,
-      validate: { min: 0, max: 100 }
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100
     },
     totalTests: {
-      type: DataTypes.INTEGER,
-      defaultValue: 0
-    },
-    lastUpdated: {
-      type: DataTypes.DATE,
-      defaultValue: DataTypes.NOW
-    },
-    isActive: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true
-    },
-    metadata: {
-      type: DataTypes.JSONB
+      type: Number,
+      default: 0
     }
-  }, {
-    tableName: 'isps',
-    indexes: [
-      { fields: ['country'] },
-      { fields: ['reliabilityScore'] },
-      { fields: ['averageDownload'] },
-      { fields: ['asn'] }
-    ]
-  });
-};
+  },
+  lastUpdated: {
+    type: Date,
+    default: Date.now
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  metadata: {
+    type: mongoose.Schema.Types.Mixed // Flexible object
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes
+ispSchema.index({ country: 1 });
+ispSchema.index({ 'statistics.reliabilityScore': -1 });
+ispSchema.index({ 'statistics.averageDownload': -1 });
+ispSchema.index({ asn: 1 });
+
+module.exports = mongoose.model('ISP', ispSchema);

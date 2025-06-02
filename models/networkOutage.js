@@ -1,55 +1,45 @@
-const { DataTypes } = require('sequelize');
+const mongoose = require('mongoose');
 
-module.exports = (sequelize) => {
-  return sequelize.define('NetworkOutage', {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    ispId: {
-      type: DataTypes.UUID,
-      allowNull: false,
-      references: {
-        model: 'ISPs',
-        key: 'id'
-      }
-    },
-    startTime: {
-      type: DataTypes.DATE,
-      allowNull: false
-    },
-    endTime: {
-      type: DataTypes.DATE
-    },
-    severity: {
-      type: DataTypes.ENUM('minor', 'major', 'critical'),
-      allowNull: false
-    },
-    affectedRegions: {
-      type: DataTypes.ARRAY(DataTypes.STRING)
-    },
-    description: {
-      type: DataTypes.TEXT
-    },
-    source: {
-      type: DataTypes.ENUM('automated', 'manual', 'user_report'),
-      defaultValue: 'automated'
-    },
-    impactScore: {
-      type: DataTypes.FLOAT,
-      validate: { min: 0, max: 100 }
-    },
-    isResolved: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false
-    }
-  }, {
-    tableName: 'network_outages',
-    indexes: [
-      { fields: ['startTime'] },
-      { fields: ['severity'] },
-      { fields: ['ispId'] }
-    ]
-  });
-};
+const networkOutageSchema = new mongoose.Schema({
+  ispId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ISP',
+    required: true
+  },
+  startTime: {
+    type: Date,
+    required: true
+  },
+  endTime: Date,
+  severity: {
+    type: String,
+    enum: ['minor', 'major', 'critical'],
+    required: true
+  },
+  affectedRegions: [String],
+  description: String,
+  source: {
+    type: String,
+    enum: ['automated', 'manual', 'user_report'],
+    default: 'automated'
+  },
+  impactScore: {
+    type: Number,
+    min: 0,
+    max: 100
+  },
+  isResolved: {
+    type: Boolean,
+    default: false
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes
+networkOutageSchema.index({ startTime: -1 });
+networkOutageSchema.index({ severity: 1 });
+networkOutageSchema.index({ ispId: 1 });
+networkOutageSchema.index({ isResolved: 1 });
+
+module.exports = mongoose.model('NetworkOutage', networkOutageSchema);

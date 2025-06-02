@@ -1,5 +1,4 @@
 const express = require('express');
-const { Op, fn, col } = require('sequelize');
 const { SpeedTest, ISP } = require('../models');
 const router = express.Router();
 
@@ -15,36 +14,43 @@ router.get('/trends', async (req, res) => {
     } = req.query;
 
     const timeFilter = getTimeFilter(timeframe);
-    const whereClause = {
-      createdAt: { [Op.gte]: timeFilter },
-      ...(ispId && { ispId }),
-      ...(region && { 'location.region': region })
+    const matchStage = {
+      createdAt: { $gte: timeFilter }
     };
 
-    const groupBy = getGroupByClause(granularity);
-    const metricColumn = getMetricColumn(metric);
+    if (ispId) {
+      matchStage.ispId = require('mongoose').Types.ObjectId(ispId);
+    }
+    if (region) {
+      matchStage['location.region'] = region;
+    }
 
-    const trends = await SpeedTest.findAll({
-      where: whereClause,
-      attributes: [
-        [fn('DATE_TRUNC', groupBy, col('createdAt')), 'period'],
-        [fn('AVG', col(metricColumn)), 'average'],
-        [fn('MIN', col(metricColumn)), 'minimum'],
-        [fn('MAX', col(metricColumn)), 'maximum'],
-        [fn('COUNT', '*'), 'testCount']
-      ],
-      group: [fn('DATE_TRUNC', groupBy, col('createdAt'))],
-      order: [[fn('DATE_TRUNC', groupBy, col('createdAt')), 'ASC']],
-      raw: true
-    });
+    const metricField = getMetricField(metric);
+    const groupByStage = getGroupByStage(granularity);
+
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $group: {
+          _id: groupByStage,
+          average: { $avg: metricField },
+          minimum: { $min: metricField },
+          maximum: { $max: metricField },
+          testCount: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id': 1 } }
+    ];
+
+    const trends = await SpeedTest.aggregate(pipeline);
 
     res.json({
       trends: trends.map(t => ({
-        period: t.period,
-        average: parseFloat(t.average) || 0,
-        minimum: parseFloat(t.minimum) || 0,
-        maximum: parseFloat(t.maximum) || 0,
-        testCount: parseInt(t.testCount) || 0
+        period: t._id,
+        average: Math.round((t.average || 0) * 100) / 100,
+        minimum: Math.round((t.minimum || 0) * 100) / 100,
+        maximum: Math.round((t.maximum || 0) * 100) / 100,
+        testCount: t.testCount || 0
       })),
       metadata: {
         timeframe,
@@ -67,30 +73,37 @@ router.get('/peak-hours', async (req, res) => {
     const { timeframe = '30d', ispId, metric = 'download' } = req.query;
     
     const timeFilter = getTimeFilter(timeframe);
-    const metricColumn = getMetricColumn(metric);
+    const matchStage = {
+      createdAt: { $gte: timeFilter }
+    };
     
-    const hourlyStats = await SpeedTest.findAll({
-      where: {
-        createdAt: { [Op.gte]: timeFilter },
-        ...(ispId && { ispId })
+    if (ispId) {
+      matchStage.ispId = require('mongoose').Types.ObjectId(ispId);
+    }
+
+    const metricField = getMetricField(metric);
+    
+    const pipeline = [
+      { $match: matchStage },
+      {
+        $group: {
+          _id: { $hour: '$createdAt' },
+          average: { $avg: metricField },
+          testCount: { $sum: 1 }
+        }
       },
-      attributes: [
-        [fn('EXTRACT', 'hour', col('createdAt')), 'hour'],
-        [fn('AVG', col(metricColumn)), 'average'],
-        [fn('COUNT', '*'), 'testCount']
-      ],
-      group: [fn('EXTRACT', 'hour', col('createdAt'))],
-      order: [[fn('EXTRACT', 'hour', col('createdAt')), 'ASC']],
-      raw: true
-    });
+      { $sort: { '_id': 1 } }
+    ];
+
+    const hourlyStats = await SpeedTest.aggregate(pipeline);
 
     // Fill in missing hours with zero values
     const allHours = Array.from({ length: 24 }, (_, i) => {
-      const hourData = hourlyStats.find(h => parseInt(h.hour) === i);
+      const hourData = hourlyStats.find(h => h._id === i);
       return {
         hour: i,
-        average: hourData ? parseFloat(hourData.average) : 0,
-        testCount: hourData ? parseInt(hourData.testCount) : 0
+        average: hourData ? Math.round(hourData.average * 100) / 100 : 0,
+        testCount: hourData ? hourData.testCount : 0
       };
     });
 
@@ -122,37 +135,48 @@ router.get('/regional', async (req, res) => {
     const { timeframe = '30d', metric = 'download' } = req.query;
     
     const timeFilter = getTimeFilter(timeframe);
-    const metricColumn = getMetricColumn(metric);
+    const metricField = getMetricField(metric);
 
-    const regionalStats = await SpeedTest.findAll({
-      where: {
-        createdAt: { [Op.gte]: timeFilter }
+    const pipeline = [
+      { $match: { createdAt: { $gte: timeFilter } } },
+      {
+        $group: {
+          _id: {
+            region: '$location.region',
+            country: '$location.country'
+          },
+          average: { $avg: metricField },
+          testCount: { $sum: 1 },
+          ispCount: { $addToSet: '$ispId' }
+        }
       },
-      attributes: [
-        [col('location.region'), 'region'],
-        [col('location.country'), 'country'],
-        [fn('AVG', col(metricColumn)), 'average'],
-        [fn('COUNT', '*'), 'testCount'],
-        [fn('COUNT', fn('DISTINCT', col('ispId'))), 'ispCount']
-      ],
-      group: [col('location.region'), col('location.country')],
-      having: {
-        [Op.and]: [
-          { [fn('COUNT', '*')]: { [Op.gte]: 10 } }, // Minimum tests
-          { [col('location.region')]: { [Op.ne]: null } }
-        ]
+      {
+        $match: {
+          testCount: { $gte: 10 }, // Minimum tests
+          '_id.region': { $ne: null }
+        }
       },
-      order: [[fn('AVG', col(metricColumn)), 'DESC']],
-      raw: true
-    });
+      {
+        $project: {
+          region: '$_id.region',
+          country: '$_id.country',
+          average: 1,
+          testCount: 1,
+          ispCount: { $size: '$ispCount' }
+        }
+      },
+      { $sort: { average: -1 } }
+    ];
+
+    const regionalStats = await SpeedTest.aggregate(pipeline);
 
     res.json({
       regions: regionalStats.map(r => ({
         region: r.region,
         country: r.country,
-        average: parseFloat(r.average) || 0,
-        testCount: parseInt(r.testCount) || 0,
-        ispCount: parseInt(r.ispCount) || 0
+        average: Math.round((r.average || 0) * 100) / 100,
+        testCount: r.testCount || 0,
+        ispCount: r.ispCount || 0
       })),
       metadata: { timeframe, metric }
     });
@@ -174,24 +198,48 @@ function getTimeFilter(timeframe) {
   }
 }
 
-function getGroupByClause(granularity) {
+function getGroupByStage(granularity) {
   switch (granularity) {
-    case 'hour': return 'hour';
-    case 'day': return 'day';
-    case 'week': return 'week';
-    case 'month': return 'month';
-    default: return 'day';
+    case 'hour': 
+      return {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' },
+        hour: { $hour: '$createdAt' }
+      };
+    case 'day':
+      return {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' }
+      };
+    case 'week':
+      return {
+        year: { $year: '$createdAt' },
+        week: { $week: '$createdAt' }
+      };
+    case 'month':
+      return {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' }
+      };
+    default:
+      return {
+        year: { $year: '$createdAt' },
+        month: { $month: '$createdAt' },
+        day: { $dayOfMonth: '$createdAt' }
+      };
   }
 }
 
-function getMetricColumn(metric) {
+function getMetricField(metric) {
   switch (metric) {
-    case 'download': return 'downloadSpeed';
-    case 'upload': return 'uploadSpeed';
-    case 'latency': return 'latency';
-    case 'jitter': return 'jitter';
-    case 'quality': return 'qualityScore';
-    default: return 'downloadSpeed';
+    case 'download': return '$downloadSpeed';
+    case 'upload': return '$uploadSpeed';
+    case 'latency': return '$latency';
+    case 'jitter': return '$jitter';
+    case 'quality': return '$qualityScore';
+    default: return '$downloadSpeed';
   }
 }
 

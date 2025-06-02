@@ -5,9 +5,9 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const WebSocket = require('ws');
 const http = require('http');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
-const { sequelize } = require('./models');
 const speedTestRoutes = require('./routes/speedTest');
 const ispRoutes = require('./routes/isp');
 const analyticsRoutes = require('./routes/analytics');
@@ -43,7 +43,8 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '1.0.0',
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
   });
 });
 
@@ -72,11 +73,13 @@ const PORT = process.env.PORT || 5000;
 // Start server
 async function startServer() {
   try {
-    await sequelize.authenticate();
-    console.log('✅ Database connected successfully');
+    // Connect to MongoDB
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/netpulse', {
+      useNewUrlParser: true,
+      useUnifiedTopology: true
+    });
     
-    await sequelize.sync({ alter: true });
-    console.log('✅ Database synchronized');
+    console.log('✅ MongoDB connected successfully');
     
     // Initialize WebSocket
     initializeWebSocket(server);

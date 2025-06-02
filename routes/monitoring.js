@@ -1,5 +1,4 @@
 const express = require('express');
-const { Op } = require('sequelize');
 const { NetworkOutage, ISP, SpeedTest } = require('../models');
 const router = express.Router();
 
@@ -8,32 +7,31 @@ router.get('/outages', async (req, res) => {
   try {
     const { status = 'active', severity, region } = req.query;
     
-    const whereClause = {};
+    const matchQuery = {};
     
     if (status === 'active') {
-      whereClause.isResolved = false;
+      matchQuery.isResolved = false;
     } else if (status === 'resolved') {
-      whereClause.isResolved = true;
+      matchQuery.isResolved = true;
     }
     
     if (severity) {
-      whereClause.severity = severity;
+      matchQuery.severity = severity;
     }
 
-    const outages = await NetworkOutage.findAll({
-      where: whereClause,
-      include: [{
-        model: ISP,
-        attributes: ['name', 'displayName', 'region', 'country'],
-        ...(region && { where: { region } })
-      }],
-      order: [['startTime', 'DESC']],
-      limit: 100
-    });
+    let outages = await NetworkOutage.find(matchQuery)
+      .populate('ispId', 'name displayName region country')
+      .sort({ startTime: -1 })
+      .limit(100);
 
-    const activeCount = await NetworkOutage.count({
-      where: { isResolved: false }
-    });
+    // Filter by region if specified
+    if (region) {
+      outages = outages.filter(outage => 
+        outage.ispId && outage.ispId.region === region
+      );
+    }
+
+    const activeCount = await NetworkOutage.countDocuments({ isResolved: false });
 
     res.json({
       outages,
@@ -65,17 +63,15 @@ router.post('/outages/report', async (req, res) => {
       return res.status(400).json({ error: 'ISP ID is required' });
     }
 
-    const isp = await ISP.findByPk(ispId);
+    const isp = await ISP.findById(ispId);
     if (!isp) {
       return res.status(404).json({ error: 'ISP not found' });
     }
 
     // Check if there's already an active outage for this ISP
     const existingOutage = await NetworkOutage.findOne({
-      where: {
-        ispId,
-        isResolved: false
-      }
+      ispId: ispId,
+      isResolved: false
     });
 
     if (existingOutage) {
@@ -85,7 +81,7 @@ router.post('/outages/report', async (req, res) => {
       });
     }
 
-    const outage = await NetworkOutage.create({
+    const outage = new NetworkOutage({
       ispId,
       startTime: new Date(),
       severity,
@@ -94,6 +90,8 @@ router.post('/outages/report', async (req, res) => {
       source: userReport ? 'user_report' : 'manual',
       impactScore: calculateImpactScore(severity, affectedRegions.length)
     });
+
+    await outage.save();
 
     res.status(201).json({
       message: 'Outage reported successfully',
@@ -112,7 +110,7 @@ router.patch('/outages/:outageId/resolve', async (req, res) => {
     const { outageId } = req.params;
     const { resolution } = req.body;
 
-    const outage = await NetworkOutage.findByPk(outageId);
+    const outage = await NetworkOutage.findById(outageId);
     if (!outage) {
       return res.status(404).json({ error: 'Outage not found' });
     }
@@ -121,11 +119,13 @@ router.patch('/outages/:outageId/resolve', async (req, res) => {
       return res.status(400).json({ error: 'Outage already resolved' });
     }
 
-    await outage.update({
-      endTime: new Date(),
-      isResolved: true,
-      description: resolution || outage.description
-    });
+    outage.endTime = new Date();
+    outage.isResolved = true;
+    if (resolution) {
+      outage.description = resolution;
+    }
+
+    await outage.save();
 
     res.json({
       message: 'Outage resolved successfully',
@@ -145,50 +145,52 @@ router.get('/health', async (req, res) => {
     const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
     const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-    // Recent test metrics
-    const recentTests = await SpeedTest.findOne({
-      where: {
-        createdAt: { [Op.gte]: oneHourAgo }
-      },
-      attributes: [
-        [require('sequelize').fn('COUNT', '*'), 'count'],
-        [require('sequelize').fn('AVG', require('sequelize').col('downloadSpeed')), 'avgDownload'],
-        [require('sequelize').fn('AVG', require('sequelize').col('latency')), 'avgLatency']
-      ],
-      raw: true
-    });
+    // Recent test metrics using aggregation
+    const recentTestsStats = await SpeedTest.aggregate([
+      { $match: { createdAt: { $gte: oneHourAgo } } },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          avgDownload: { $avg: '$downloadSpeed' },
+          avgLatency: { $avg: '$latency' }
+        }
+      }
+    ]);
+
+    const recentTests = recentTestsStats[0] || { count: 0, avgDownload: 0, avgLatency: 0 };
 
     // Active outages
-    const activeOutages = await NetworkOutage.count({
-      where: { isResolved: false }
-    });
+    const activeOutages = await NetworkOutage.countDocuments({ isResolved: false });
 
     // ISP performance summary
-    const ispSummary = await ISP.findOne({
-      attributes: [
-        [require('sequelize').fn('COUNT', '*'), 'totalIsps'],
-        [require('sequelize').fn('AVG', require('sequelize').col('reliabilityScore')), 'avgReliability']
-      ],
-      where: { isActive: true },
-      raw: true
-    });
+    const ispStats = await ISP.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: null,
+          totalIsps: { $sum: 1 },
+          avgReliability: { $avg: '$statistics.reliabilityScore' }
+        }
+      }
+    ]);
+
+    const ispSummary = ispStats[0] || { totalIsps: 0, avgReliability: 0 };
 
     // Daily test volume
-    const dailyVolume = await SpeedTest.count({
-      where: {
-        createdAt: { [Op.gte]: oneDayAgo }
-      }
+    const dailyVolume = await SpeedTest.countDocuments({
+      createdAt: { $gte: oneDayAgo }
     });
 
     const health = {
       status: activeOutages === 0 ? 'healthy' : activeOutages < 5 ? 'warning' : 'critical',
       metrics: {
-        recentTests: parseInt(recentTests?.count) || 0,
-        averageDownload: parseFloat(recentTests?.avgDownload) || 0,
-        averageLatency: parseFloat(recentTests?.avgLatency) || 0,
+        recentTests: recentTests.count,
+        averageDownload: Math.round((recentTests.avgDownload || 0) * 100) / 100,
+        averageLatency: Math.round((recentTests.avgLatency || 0) * 100) / 100,
         activeOutages,
-        totalIsps: parseInt(ispSummary?.totalIsps) || 0,
-        averageReliability: parseFloat(ispSummary?.avgReliability) || 0,
+        totalIsps: ispSummary.totalIsps,
+        averageReliability: Math.round((ispSummary.avgReliability || 0) * 100) / 100,
         dailyTestVolume: dailyVolume
       },
       timestamp: now.toISOString()

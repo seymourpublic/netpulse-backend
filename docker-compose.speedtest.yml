@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  speedtest-server-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.speedtest
+    ports:
+      - "8001:3000"
+    environment:
+      - SERVER_ID=speedtest-1
+      - SERVER_LOCATION=US-East
+      - PORT=3000
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  speedtest-server-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.speedtest
+    ports:
+      - "8002:3000"
+    environment:
+      - SERVER_ID=speedtest-2
+      - SERVER_LOCATION=US-West
+      - PORT=3000
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  nginx-speedtest:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx-speedtest.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - speedtest-server-1
+      - speedtest-server-2
+    restart: unless-stopped

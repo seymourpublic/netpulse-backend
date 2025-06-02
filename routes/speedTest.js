@@ -1,10 +1,10 @@
 const express = require('express');
-const { Op } = require('sequelize');
 const { SpeedTest, ISP, UserSession } = require('../models');
 const { performSpeedTest } = require('../services/speedTestService');
 const { getLocationFromIP } = require('../services/locationService');
 const { calculateQualityScore } = require('../utils/scoring');
 const router = express.Router();
+const CustomSpeedTestEngine = require('../services/customSpeedTestEngine');
 
 // Run speed test
 router.post('/run', async (req, res) => {
@@ -13,34 +13,36 @@ router.post('/run', async (req, res) => {
     const clientIP = req.ip || req.connection.remoteAddress;
     
     // Get or create user session
-    let session = await UserSession.findOne({ where: { sessionToken } });
+    let session = await UserSession.findOne({ sessionToken });
     if (!session) {
-      session = await UserSession.create({
+      session = new UserSession({
         sessionToken: sessionToken || require('uuid').v4(),
         ipAddress: clientIP,
         userAgent: req.headers['user-agent'],
         location: await getLocationFromIP(clientIP)
       });
+      await session.save();
     }
 
     // Perform speed test
     const testResult = await performSpeedTest(clientIP, testConfig);
     
-    // Get ISP information
-    let isp = await ISP.findOne({ where: { name: testResult.isp } });
+    // Get or create ISP
+    let isp = await ISP.findOne({ name: testResult.isp });
     if (!isp) {
-      isp = await ISP.create({
+      isp = new ISP({
         name: testResult.isp,
         country: testResult.location.country,
         region: testResult.location.region
       });
+      await isp.save();
     }
 
     // Calculate quality score
     const qualityScore = calculateQualityScore(testResult);
 
     // Save test result
-    const speedTest = await SpeedTest.create({
+    const speedTest = new SpeedTest({
       downloadSpeed: testResult.download,
       uploadSpeed: testResult.upload,
       latency: testResult.latency,
@@ -55,21 +57,22 @@ router.post('/run', async (req, res) => {
       testServerId: testResult.serverId,
       rawResults: testResult.raw,
       qualityScore,
-      ispId: isp.id,
-      sessionId: session.id
+      ispId: isp._id,
+      sessionId: session._id
     });
+
+    await speedTest.save();
 
     // Update ISP statistics
-    await updateISPStats(isp.id);
+    await updateISPStats(isp._id);
 
     // Update session
-    await session.update({
-      lastActivity: new Date(),
-      totalTests: session.totalTests + 1
-    });
+    session.lastActivity = new Date();
+    session.totalTests += 1;
+    await session.save();
 
     res.json({
-      testId: speedTest.id,
+      testId: speedTest._id,
       results: {
         download: speedTest.downloadSpeed,
         upload: speedTest.uploadSpeed,
@@ -94,23 +97,23 @@ router.get('/history', async (req, res) => {
   try {
     const { sessionToken, limit = 50, offset = 0 } = req.query;
 
-    const session = await UserSession.findOne({ where: { sessionToken } });
+    const session = await UserSession.findOne({ sessionToken });
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
 
-    const tests = await SpeedTest.findAndCountAll({
-      where: { sessionId: session.id },
-      include: [{ model: ISP, attributes: ['name', 'displayName'] }],
-      order: [['createdAt', 'DESC']],
-      limit: parseInt(limit),
-      offset: parseInt(offset)
-    });
+    const tests = await SpeedTest.find({ sessionId: session._id })
+      .populate('ispId', 'name displayName')
+      .sort({ createdAt: -1 })
+      .limit(parseInt(limit))
+      .skip(parseInt(offset));
+
+    const total = await SpeedTest.countDocuments({ sessionId: session._id });
 
     res.json({
-      tests: tests.rows,
-      total: tests.count,
-      hasMore: tests.count > (parseInt(offset) + parseInt(limit))
+      tests,
+      total,
+      hasMore: total > (parseInt(offset) + parseInt(limit))
     });
 
   } catch (error) {
@@ -122,12 +125,9 @@ router.get('/history', async (req, res) => {
 // Get test details
 router.get('/:testId', async (req, res) => {
   try {
-    const test = await SpeedTest.findByPk(req.params.testId, {
-      include: [
-        { model: ISP, attributes: ['name', 'displayName', 'website'] },
-        { model: UserSession, attributes: ['sessionToken'] }
-      ]
-    });
+    const test = await SpeedTest.findById(req.params.testId)
+      .populate('ispId', 'name displayName website')
+      .populate('sessionId', 'sessionToken');
 
     if (!test) {
       return res.status(404).json({ error: 'Test not found' });
@@ -142,57 +142,164 @@ router.get('/:testId', async (req, res) => {
 });
 
 async function updateISPStats(ispId) {
-  const stats = await SpeedTest.findOne({
-    where: { ispId },
-    attributes: [
-      [require('sequelize').fn('AVG', require('sequelize').col('downloadSpeed')), 'avgDownload'],
-      [require('sequelize').fn('AVG', require('sequelize').col('uploadSpeed')), 'avgUpload'],
-      [require('sequelize').fn('AVG', require('sequelize').col('latency')), 'avgLatency'],
-      [require('sequelize').fn('COUNT', '*'), 'totalTests']
-    ],
-    raw: true
-  });
+  try {
+    // Use MongoDB aggregation pipeline for statistics
+    const stats = await SpeedTest.aggregate([
+      { $match: { ispId: ispId } },
+      {
+        $group: {
+          _id: null,
+          avgDownload: { $avg: '$downloadSpeed' },
+          avgUpload: { $avg: '$uploadSpeed' },
+          avgLatency: { $avg: '$latency' },
+          totalTests: { $sum: 1 },
+          speeds: { $push: '$downloadSpeed' },
+          packetLosses: { $push: '$packetLoss' }
+        }
+      }
+    ]);
 
-  const reliabilityScore = await calculateReliabilityScore(ispId);
+    if (stats.length > 0) {
+      const stat = stats[0];
+      const reliabilityScore = calculateReliabilityScore(stat.speeds, stat.packetLosses);
 
-  await ISP.update({
-    averageDownload: parseFloat(stats.avgDownload) || 0,
-    averageUpload: parseFloat(stats.avgUpload) || 0,
-    averageLatency: parseFloat(stats.avgLatency) || 0,
-    totalTests: parseInt(stats.totalTests) || 0,
-    reliabilityScore,
-    lastUpdated: new Date()
-  }, {
-    where: { id: ispId }
-  });
+      await ISP.findByIdAndUpdate(ispId, {
+        'statistics.averageDownload': stat.avgDownload || 0,
+        'statistics.averageUpload': stat.avgUpload || 0,
+        'statistics.averageLatency': stat.avgLatency || 0,
+        'statistics.totalTests': stat.totalTests || 0,
+        'statistics.reliabilityScore': reliabilityScore,
+        lastUpdated: new Date()
+      });
+    }
+  } catch (error) {
+    console.error('Error updating ISP stats:', error);
+  }
 }
 
-async function calculateReliabilityScore(ispId) {
-  // Calculate based on consistency and outages
-  const recentTests = await SpeedTest.findAll({
-    where: {
-      ispId,
-      createdAt: {
-        [Op.gte]: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
-      }
-    },
-    attributes: ['downloadSpeed', 'packetLoss'],
-    raw: true
-  });
+router.post('/comprehensive', async (req, res) => {
+  try {
+    const { sessionToken, testConfig = {} } = req.body;
+    const clientIP = req.ip || req.connection.remoteAddress;
+    
+    // Get or create user session
+    let session = await UserSession.findOne({ sessionToken });
+    if (!session) {
+      session = new UserSession({
+        sessionToken: sessionToken || require('uuid').v4(),
+        ipAddress: clientIP,
+        userAgent: req.headers['user-agent'],
+        location: await getLocationFromIP(clientIP)
+      });
+      await session.save();
+    }
 
-  if (recentTests.length === 0) return 0;
+    // Initialize custom speed test engine
+    const speedTestEngine = new CustomSpeedTestEngine();
+    
+    // Run comprehensive speed test
+    const testResult = await speedTestEngine.runComprehensiveTest(clientIP, testConfig);
+    
+    // Get or create ISP
+    let isp = await ISP.findOne({ name: testResult.networkInfo?.isp || 'Unknown ISP' });
+    if (!isp) {
+      isp = new ISP({
+        name: testResult.networkInfo?.isp || 'Unknown ISP',
+        country: testResult.networkInfo?.location?.country || 'Unknown',
+        region: testResult.networkInfo?.location?.region || 'Unknown'
+      });
+      await isp.save();
+    }
+
+    // Save comprehensive test result
+    const speedTest = new SpeedTest({
+      downloadSpeed: testResult.results.download.speed,
+      uploadSpeed: testResult.results.upload.speed,
+      latency: testResult.results.latency.avg,
+      jitter: testResult.results.latency.jitter,
+      packetLoss: testResult.results.packetLoss,
+      testDuration: testResult.metadata.duration,
+      ipAddress: clientIP,
+      userAgent: req.headers['user-agent'],
+      deviceInfo: testResult.deviceInfo,
+      networkType: testResult.networkInfo?.type || 'unknown',
+      location: testResult.networkInfo?.location,
+      testServerId: testResult.server?.id,
+      rawResults: {
+        downloadSamples: testResult.results.download.samples,
+        uploadSamples: testResult.results.upload.samples,
+        latencySamples: testResult.results.latency.samples,
+        comprehensive: testResult
+      },
+      qualityScore: testResult.results.quality.score,
+      ispId: isp._id,
+      sessionId: session._id
+    });
+
+    await speedTest.save();
+
+    // Update ISP statistics
+    await updateISPStats(isp._id);
+
+    // Update session
+    session.lastActivity = new Date();
+    session.totalTests += 1;
+    await session.save();
+
+    res.json({
+      testId: speedTest._id,
+      results: {
+        download: {
+          speed: testResult.results.download.speed,
+          consistency: testResult.results.download.consistency
+        },
+        upload: {
+          speed: testResult.results.upload.speed,
+          consistency: testResult.results.upload.consistency
+        },
+        latency: {
+          avg: testResult.results.latency.avg,
+          min: testResult.results.latency.min,
+          max: testResult.results.latency.max,
+          jitter: testResult.results.latency.jitter
+        },
+        packetLoss: testResult.results.packetLoss,
+        quality: testResult.results.quality
+      },
+      metadata: {
+        server: testResult.server,
+        duration: testResult.metadata.duration,
+        reliability: testResult.metadata.reliability,
+        testStages: testResult.metadata.testStages
+      },
+      location: testResult.networkInfo?.location,
+      isp: isp.name,
+      timestamp: speedTest.createdAt
+    });
+
+  } catch (error) {
+    console.error('Comprehensive speed test error:', error);
+    res.status(500).json({ 
+      error: 'Failed to run comprehensive speed test',
+      details: error.message 
+    });
+  }
+});
+
+
+function calculateReliabilityScore(speeds, packetLosses) {
+  if (!speeds || speeds.length === 0) return 0;
 
   // Calculate consistency (lower variance = higher score)
-  const speeds = recentTests.map(t => t.downloadSpeed);
   const mean = speeds.reduce((a, b) => a + b, 0) / speeds.length;
   const variance = speeds.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / speeds.length;
   const consistencyScore = Math.max(0, 100 - (variance / mean) * 100);
 
   // Calculate packet loss penalty
-  const avgPacketLoss = recentTests.reduce((a, b) => a + b.packetLoss, 0) / recentTests.length;
+  const avgPacketLoss = packetLosses.reduce((a, b) => a + b, 0) / packetLosses.length;
   const packetLossScore = Math.max(0, 100 - avgPacketLoss * 10);
 
-  return (consistencyScore * 0.7 + packetLossScore * 0.3);
+  return Math.round((consistencyScore * 0.7 + packetLossScore * 0.3) * 100) / 100;
 }
 
 module.exports = router;

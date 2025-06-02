@@ -1,48 +1,44 @@
-const { DataTypes } = require('sequelize');
+const mongoose = require('mongoose');
 
-module.exports = (sequelize) => {
-  return sequelize.define('UserSession', {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    sessionToken: {
-      type: DataTypes.STRING,
-      unique: true,
-      allowNull: false
-    },
-    ipAddress: {
-      type: DataTypes.INET,
-      allowNull: false
-    },
-    userAgent: {
-      type: DataTypes.TEXT
-    },
-    location: {
-      type: DataTypes.JSONB
-    },
-    deviceFingerprint: {
-      type: DataTypes.STRING
-    },
-    lastActivity: {
-      type: DataTypes.DATE,
-      defaultValue: DataTypes.NOW
-    },
-    totalTests: {
-      type: DataTypes.INTEGER,
-      defaultValue: 0
-    },
-    isActive: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: true
-    }
-  }, {
-    tableName: 'user_sessions',
-    indexes: [
-      { fields: ['sessionToken'] },
-      { fields: ['ipAddress'] },
-      { fields: ['lastActivity'] }
-    ]
-  });
-};
+const userSessionSchema = new mongoose.Schema({
+  sessionToken: {
+    type: String,
+    unique: true,
+    required: true
+  },
+  ipAddress: {
+    type: String,
+    required: true
+  },
+  userAgent: String,
+  location: {
+    city: String,
+    country: String,
+    region: String,
+    lat: Number,
+    lng: Number,
+    timezone: String
+  },
+  deviceFingerprint: String,
+  lastActivity: {
+    type: Date,
+    default: Date.now
+  },
+  totalTests: {
+    type: Number,
+    default: 0
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  }
+}, {
+  timestamps: true
+});
+
+// Indexes
+userSessionSchema.index({ sessionToken: 1 });
+userSessionSchema.index({ ipAddress: 1 });
+userSessionSchema.index({ lastActivity: -1 });
+
+module.exports = mongoose.model('UserSession', userSessionSchema);

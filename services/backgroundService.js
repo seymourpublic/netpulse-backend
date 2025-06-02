@@ -1,6 +1,5 @@
 const cron = require('node-cron');
 const { SpeedTest, ISP, NetworkOutage } = require('../models');
-const { Op } = require('sequelize');
 
 class BackgroundService {
   constructor() {
@@ -31,22 +30,16 @@ class BackgroundService {
       await this.cleanOldData();
     });
 
-    // Generate daily reports at 6 AM
-    cron.schedule('0 6 * * *', async () => {
-      console.log('📈 Generating daily reports...');
-      await this.generateDailyReports();
-    });
-
     console.log('✅ Background services started');
   }
 
   async updateISPStatistics() {
     try {
-      const isps = await ISP.findAll({ where: { isActive: true } });
+      const isps = await ISP.find({ isActive: true });
       
       for (const isp of isps) {
-        const stats = await this.calculateISPStats(isp.id);
-        await isp.update(stats);
+        const stats = await this.calculateISPStats(isp._id);
+        await ISP.findByIdAndUpdate(isp._id, { statistics: stats, lastUpdated: new Date() });
       }
       
       console.log(`Updated statistics for ${isps.length} ISPs`);
@@ -58,86 +51,91 @@ class BackgroundService {
   async calculateISPStats(ispId) {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     
-    const tests = await SpeedTest.findAll({
-      where: {
-        ispId,
-        createdAt: { [Op.gte]: thirtyDaysAgo }
+    const stats = await SpeedTest.aggregate([
+      { 
+        $match: { 
+          ispId: ispId,
+          createdAt: { $gte: thirtyDaysAgo }
+        }
       },
-      attributes: ['downloadSpeed', 'uploadSpeed', 'latency', 'packetLoss']
-    });
+      {
+        $group: {
+          _id: null,
+          avgDownload: { $avg: '$downloadSpeed' },
+          avgUpload: { $avg: '$uploadSpeed' },
+          avgLatency: { $avg: '$latency' },
+          avgPacketLoss: { $avg: '$packetLoss' },
+          totalTests: { $sum: 1 },
+          speeds: { $push: '$downloadSpeed' }
+        }
+      }
+    ]);
 
-    if (tests.length === 0) {
+    if (stats.length === 0) {
       return {
         averageDownload: 0,
         averageUpload: 0,
         averageLatency: 0,
         reliabilityScore: 0,
-        totalTests: 0,
-        lastUpdated: new Date()
+        totalTests: 0
       };
     }
 
-    const avgDownload = tests.reduce((sum, t) => sum + t.downloadSpeed, 0) / tests.length;
-    const avgUpload = tests.reduce((sum, t) => sum + t.uploadSpeed, 0) / tests.length;
-    const avgLatency = tests.reduce((sum, t) => sum + t.latency, 0) / tests.length;
-    const avgPacketLoss = tests.reduce((sum, t) => sum + t.packetLoss, 0) / tests.length;
-
-    // Calculate reliability score based on consistency and packet loss
-    const downloadSpeeds = tests.map(t => t.downloadSpeed);
-    const downloadVariance = this.calculateVariance(downloadSpeeds);
-    const consistencyScore = Math.max(0, 100 - (downloadVariance / avgDownload) * 100);
-    const packetLossScore = Math.max(0, 100 - avgPacketLoss * 10);
+    const stat = stats[0];
+    
+    // Calculate reliability score
+    const mean = stat.avgDownload;
+    const variance = stat.speeds.reduce((acc, speed) => acc + Math.pow(speed - mean, 2), 0) / stat.speeds.length;
+    const consistencyScore = Math.max(0, 100 - (variance / mean) * 100);
+    const packetLossScore = Math.max(0, 100 - stat.avgPacketLoss * 10);
     const reliabilityScore = (consistencyScore * 0.7 + packetLossScore * 0.3);
 
     return {
-      averageDownload: Math.round(avgDownload * 100) / 100,
-      averageUpload: Math.round(avgUpload * 100) / 100,
-      averageLatency: Math.round(avgLatency * 100) / 100,
+      averageDownload: Math.round((stat.avgDownload || 0) * 100) / 100,
+      averageUpload: Math.round((stat.avgUpload || 0) * 100) / 100,
+      averageLatency: Math.round((stat.avgLatency || 0) * 100) / 100,
       reliabilityScore: Math.round(reliabilityScore * 100) / 100,
-      totalTests: tests.length,
-      lastUpdated: new Date()
+      totalTests: stat.totalTests || 0
     };
-  }
-
-  calculateVariance(numbers) {
-    const mean = numbers.reduce((a, b) => a + b, 0) / numbers.length;
-    return numbers.reduce((sum, num) => sum + Math.pow(num - mean, 2), 0) / numbers.length;
   }
 
   async detectNetworkOutages() {
     try {
       const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-      
-      // Find ISPs with significantly degraded performance or no tests
-      const isps = await ISP.findAll({ where: { isActive: true } });
+      const isps = await ISP.find({ isActive: true });
       
       for (const isp of isps) {
-        const recentTests = await SpeedTest.count({
-          where: {
-            ispId: isp.id,
-            createdAt: { [Op.gte]: oneHourAgo }
-          }
+        const recentTestCount = await SpeedTest.countDocuments({
+          ispId: isp._id,
+          createdAt: { $gte: oneHourAgo }
         });
 
-        const recentAvgSpeed = await SpeedTest.findOne({
-          where: {
-            ispId: isp.id,
-            createdAt: { [Op.gte]: oneHourAgo }
+        const recentAvgSpeed = await SpeedTest.aggregate([
+          {
+            $match: {
+              ispId: isp._id,
+              createdAt: { $gte: oneHourAgo }
+            }
           },
-          attributes: [
-            [require('sequelize').fn('AVG', require('sequelize').col('downloadSpeed')), 'avgSpeed']
-          ],
-          raw: true
-        });
+          {
+            $group: {
+              _id: null,
+              avgSpeed: { $avg: '$downloadSpeed' }
+            }
+          }
+        ]);
+
+        const currentAvg = recentAvgSpeed[0]?.avgSpeed || 0;
+        const expectedAvg = isp.statistics?.averageDownload || 0;
 
         // Check for potential outage conditions
         const hasOutage = (
-          recentTests === 0 || // No tests in the last hour
-          (recentAvgSpeed?.avgSpeed && recentAvgSpeed.avgSpeed < isp.averageDownload * 0.3) // Speed dropped by 70%
+          recentTestCount === 0 || // No tests in the last hour
+          (currentAvg > 0 && expectedAvg > 0 && currentAvg < expectedAvg * 0.3) // Speed dropped by 70%
         );
 
         if (hasOutage) {
-          await this.recordNetworkOutage(isp.id, recentTests === 0 ? 'critical' : 'major');
+          await this.recordNetworkOutage(isp._id, recentTestCount === 0 ? 'critical' : 'major');
         }
       }
       
@@ -148,21 +146,20 @@ class BackgroundService {
 
   async recordNetworkOutage(ispId, severity) {
     const existingOutage = await NetworkOutage.findOne({
-      where: {
-        ispId,
-        isResolved: false
-      }
+      ispId: ispId,
+      isResolved: false
     });
 
     if (!existingOutage) {
-      await NetworkOutage.create({
+      const outage = new NetworkOutage({
         ispId,
         startTime: new Date(),
         severity,
         source: 'automated',
         description: `Detected ${severity} performance degradation`
       });
-      
+
+      await outage.save();
       console.log(`🚨 Network outage detected for ISP ${ispId} (${severity})`);
     }
   }
@@ -170,62 +167,23 @@ class BackgroundService {
   async cleanOldData() {
     try {
       const sixMonthsAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+      const threeMonthsAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
       
-      // Clean old speed tests (keep only 6 months)
-      const deletedTests = await SpeedTest.destroy({
-        where: {
-          createdAt: { [Op.lt]: sixMonthsAgo }
-        }
+      // Clean old speed tests
+      const deletedTests = await SpeedTest.deleteMany({
+        createdAt: { $lt: sixMonthsAgo }
       });
 
       // Clean resolved outages older than 3 months
-      const threeMonthsAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-      const deletedOutages = await NetworkOutage.destroy({
-        where: {
-          isResolved: true,
-          endTime: { [Op.lt]: threeMonthsAgo }
-        }
+      const deletedOutages = await NetworkOutage.deleteMany({
+        isResolved: true,
+        endTime: { $lt: threeMonthsAgo }
       });
 
-      console.log(`🧹 Cleaned ${deletedTests} old tests and ${deletedOutages} resolved outages`);
+      console.log(`🧹 Cleaned ${deletedTests.deletedCount} old tests and ${deletedOutages.deletedCount} resolved outages`);
       
     } catch (error) {
       console.error('Error cleaning old data:', error);
-    }
-  }
-
-  async generateDailyReports() {
-    try {
-      // Generate summary statistics for the previous day
-      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const startOfDay = new Date(yesterday.setHours(0, 0, 0, 0));
-      const endOfDay = new Date(yesterday.setHours(23, 59, 59, 999));
-
-      const dailyStats = await SpeedTest.findOne({
-        where: {
-          createdAt: {
-            [Op.between]: [startOfDay, endOfDay]
-          }
-        },
-        attributes: [
-          [require('sequelize').fn('COUNT', '*'), 'totalTests'],
-          [require('sequelize').fn('AVG', require('sequelize').col('downloadSpeed')), 'avgDownload'],
-          [require('sequelize').fn('AVG', require('sequelize').col('uploadSpeed')), 'avgUpload'],
-          [require('sequelize').fn('AVG', require('sequelize').col('latency')), 'avgLatency']
-        ],
-        raw: true
-      });
-
-      console.log('📈 Daily Report:', {
-        date: yesterday.toISOString().split('T')[0],
-        totalTests: dailyStats?.totalTests || 0,
-        avgDownload: Math.round((dailyStats?.avgDownload || 0) * 100) / 100,
-        avgUpload: Math.round((dailyStats?.avgUpload || 0) * 100) / 100,
-        avgLatency: Math.round((dailyStats?.avgLatency || 0) * 100) / 100
-      });
-      
-    } catch (error) {
-      console.error('Error generating daily reports:', error);
     }
   }
 }

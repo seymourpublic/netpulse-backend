@@ -1,98 +1,95 @@
-const { DataTypes } = require('sequelize');
+const mongoose = require('mongoose');
 
-module.exports = (sequelize) => {
-  return sequelize.define('SpeedTest', {
-    id: {
-      type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
-      primaryKey: true
-    },
-    downloadSpeed: {
-      type: DataTypes.FLOAT,
-      allowNull: false,
-      validate: { min: 0 }
-    },
-    uploadSpeed: {
-      type: DataTypes.FLOAT,
-      allowNull: false,
-      validate: { min: 0 }
-    },
-    latency: {
-      type: DataTypes.FLOAT,
-      allowNull: false,
-      validate: { min: 0 }
-    },
-    jitter: {
-      type: DataTypes.FLOAT,
-      allowNull: false,
-      validate: { min: 0 }
-    },
-    packetLoss: {
-      type: DataTypes.FLOAT,
-      allowNull: false,
-      defaultValue: 0,
-      validate: { min: 0, max: 100 }
-    },
-    testDuration: {
-      type: DataTypes.INTEGER,
-      allowNull: false
-    },
-    ipAddress: {
-      type: DataTypes.INET,
-      allowNull: false
-    },
-    userAgent: {
-      type: DataTypes.TEXT
-    },
-    deviceInfo: {
-      type: DataTypes.JSONB
-    },
-    networkType: {
-      type: DataTypes.ENUM('wifi', 'ethernet', 'mobile', 'unknown'),
-      defaultValue: 'unknown'
-    },
-    location: {
-      type: DataTypes.JSONB // { city, country, lat, lng, region }
-    },
-    testServerId: {
-      type: DataTypes.STRING
-    },
-    rawResults: {
-      type: DataTypes.JSONB // Store raw speed test data
-    },
-    qualityScore: {
-      type: DataTypes.FLOAT,
-      validate: { min: 0, max: 100 }
-    },
-    ispId: {
-      type: DataTypes.UUID,
-      references: {
-        model: 'ISPs',
-        key: 'id'
-      }
-    },
-    sessionId: {
-      type: DataTypes.UUID,
-      references: {
-        model: 'UserSessions',
-        key: 'id'
-      }
-    },
-    serverNodeId: {
-      type: DataTypes.UUID,
-      references: {
-        model: 'ServerNodes',
-        key: 'id'
-      }
-    }
-  }, {
-    tableName: 'speed_tests',
-    indexes: [
-      { fields: ['createdAt'] },
-      { fields: ['ispId'] },
-      { fields: ['location'] },
-      { fields: ['qualityScore'] },
-      { fields: ['networkType'] }
-    ]
-  });
-};
+const speedTestSchema = new mongoose.Schema({
+  downloadSpeed: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  uploadSpeed: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  latency: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  jitter: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  packetLoss: {
+    type: Number,
+    required: true,
+    default: 0,
+    min: 0,
+    max: 100
+  },
+  testDuration: {
+    type: Number,
+    required: true
+  },
+  ipAddress: {
+    type: String,
+    required: true
+  },
+  userAgent: {
+    type: String
+  },
+  deviceInfo: {
+    cpu: String,
+    memory: String,
+    os: String,
+    cores: Number
+  },
+  networkType: {
+    type: String,
+    enum: ['wifi', 'ethernet', 'mobile', 'unknown'],
+    default: 'unknown'
+  },
+  location: {
+    city: String,
+    country: String,
+    region: String,
+    lat: Number,
+    lng: Number,
+    timezone: String
+  },
+  testServerId: String,
+  rawResults: {
+    downloadSamples: [Number],
+    uploadSamples: [Number],
+    latencySamples: [Number]
+  },
+  qualityScore: {
+    type: Number,
+    min: 0,
+    max: 100
+  },
+  ispId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ISP'
+  },
+  sessionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'UserSession'
+  },
+  serverNodeId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ServerNode'
+  }
+}, {
+  timestamps: true // Automatically adds createdAt and updatedAt
+});
+
+// Indexes for better query performance
+speedTestSchema.index({ createdAt: -1 });
+speedTestSchema.index({ ispId: 1 });
+speedTestSchema.index({ 'location.country': 1 });
+speedTestSchema.index({ qualityScore: -1 });
+speedTestSchema.index({ networkType: 1 });
+
+module.exports = mongoose.model('SpeedTest', speedTestSchema);
