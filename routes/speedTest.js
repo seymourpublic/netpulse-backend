@@ -85,12 +85,12 @@ router.post('/comprehensive', async (req, res) => {
     } catch (locationError) {
       console.warn('Location detection failed:', locationError);
       location = {
-        country: 'Unknown',
-        region: 'Unknown',
-        city: 'Unknown',
-        lat: 0,
-        lng: 0,
-        timezone: 'UTC'
+        country: 'ZA',
+        region: 'Gauteng',
+        city: 'Johannesburg',
+        lat: -26.2041,
+        lng: 28.0473,
+        timezone: 'Africa/Johannesburg'
       };
     }
 
@@ -188,39 +188,112 @@ router.post('/comprehensive', async (req, res) => {
       qualityScore = 0;
     }
 
-    // Save comprehensive test result with error handling
-    let speedTest;
+    // FIXED: Prepare raw results data properly for MongoDB
+    let rawResults = {
+      downloadSamples: [],
+      uploadSamples: [],
+      latencySamples: [],
+      comprehensive: null
+    };
+
     try {
-      speedTest = new SpeedTest({
-        downloadSpeed: testResult.results?.download?.speed || 0,
-        uploadSpeed: testResult.results?.upload?.speed || 0,
-        latency: testResult.results?.latency?.avg || 0,
-        jitter: testResult.results?.latency?.jitter || 0,
-        packetLoss: testResult.results?.packetLoss || 0,
-        testDuration: testResult.metadata?.duration || 0,
-        ipAddress: clientIP,
-        userAgent: req.headers['user-agent'] || 'Unknown',
-        deviceInfo: testResult.deviceInfo || {},
-        networkType: testResult.networkInfo?.type || 'unknown',
-        location: location,
-        testServerId: testResult.server?.id,
-        rawResults: {
-          downloadSamples: testResult.results?.download?.samples || [],
-          uploadSamples: testResult.results?.upload?.samples || [],
-          latencySamples: testResult.results?.latency?.samples || [],
-          comprehensive: testResult
-        },
-        qualityScore: qualityScore,
-        ispId: isp._id,
-        sessionId: session._id
+      // Extract just the speed values from samples, not the full objects
+      if (testResult.results?.download?.samples && Array.isArray(testResult.results.download.samples)) {
+        rawResults.downloadSamples = testResult.results.download.samples
+          .map(sample => typeof sample === 'object' ? sample.speed : sample)
+          .filter(speed => typeof speed === 'number' && !isNaN(speed))
+          .slice(0, 100); // Limit to 100 samples to avoid document size issues
+      }
+
+      if (testResult.results?.upload?.samples && Array.isArray(testResult.results.upload.samples)) {
+        rawResults.uploadSamples = testResult.results.upload.samples
+          .map(sample => typeof sample === 'object' ? sample.speed : sample)
+          .filter(speed => typeof speed === 'number' && !isNaN(speed))
+          .slice(0, 100); // Limit to 100 samples
+      }
+
+      if (testResult.results?.latency?.samples && Array.isArray(testResult.results.latency.samples)) {
+        rawResults.latencySamples = testResult.results.latency.samples
+          .filter(latency => typeof latency === 'number' && !isNaN(latency))
+          .slice(0, 50); // Limit to 50 samples
+      }
+
+      // Store a simplified version of comprehensive results (not the full object)
+      rawResults.comprehensive = {
+        serverId: testResult.server?.id,
+        duration: testResult.metadata?.duration,
+        stages: testResult.metadata?.testStages?.length || 0,
+        reliability: testResult.metadata?.reliability || 0
+      };
+
+      console.log('Prepared raw results:', {
+        downloadSamples: rawResults.downloadSamples.length,
+        uploadSamples: rawResults.uploadSamples.length,
+        latencySamples: rawResults.latencySamples.length
       });
 
+    } catch (rawError) {
+      console.warn('Raw results preparation failed:', rawError);
+      // Use empty arrays as fallback
+      rawResults = {
+        downloadSamples: [],
+        uploadSamples: [],
+        latencySamples: [],
+        comprehensive: null
+      };
+    }
+
+    // Save comprehensive test result with proper data types
+    let speedTest;
+    try {
+      const speedTestData = {
+        downloadSpeed: Number(testResult.results?.download?.speed) || 0,
+        uploadSpeed: Number(testResult.results?.upload?.speed) || 0,
+        latency: Number(testResult.results?.latency?.avg) || 0,
+        jitter: Number(testResult.results?.latency?.jitter) || 0,
+        packetLoss: Number(testResult.results?.packetLoss) || 0,
+        testDuration: Number(testResult.metadata?.duration) || 0,
+        ipAddress: String(clientIP),
+        userAgent: String(req.headers['user-agent'] || 'Unknown'),
+        deviceInfo: testResult.deviceInfo || {
+          cpu: 'Unknown',
+          memory: 'Unknown',
+          os: 'Unknown'
+        },
+        networkType: testResult.networkInfo?.type || 'unknown',
+        location: {
+          city: String(location.city || 'Unknown'),
+          region: String(location.region || 'Unknown'),
+          country: String(location.country || 'Unknown'),
+          lat: Number(location.lat) || 0,
+          lng: Number(location.lng) || 0,
+          timezone: String(location.timezone || 'UTC')
+        },
+        testServerId: String(testResult.server?.id || 'unknown'),
+        rawResults: rawResults, // This now contains properly formatted arrays
+        qualityScore: Number(qualityScore),
+        ispId: isp._id,
+        sessionId: session._id
+      };
+
+      console.log('Attempting to save speed test with data types:', {
+        downloadSpeed: typeof speedTestData.downloadSpeed,
+        uploadSpeed: typeof speedTestData.uploadSpeed,
+        latency: typeof speedTestData.latency,
+        rawResultsType: typeof speedTestData.rawResults,
+        downloadSamplesLength: speedTestData.rawResults.downloadSamples.length,
+        uploadSamplesLength: speedTestData.rawResults.uploadSamples.length
+      });
+
+      speedTest = new SpeedTest(speedTestData);
       await speedTest.save();
-      console.log('Saved speed test result:', speedTest._id);
+      console.log('✅ Speed test result saved successfully:', speedTest._id);
 
     } catch (saveError) {
-      console.error('Failed to save speed test result:', saveError);
-      // Continue without saving for now
+      console.error('❌ Failed to save speed test result:', saveError);
+      console.error('Error details:', saveError.message);
+      
+      // Continue without saving for now, but log the error
       speedTest = { _id: 'unsaved' };
     }
 
