@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 const http = require('http');
 const mongoose = require('mongoose');
 require('dotenv').config();
+const dbConnection = require('./db/connection');
 
 const speedTestRoutes = require('./routes/speedTest');
 const ispRoutes = require('./routes/isp');
