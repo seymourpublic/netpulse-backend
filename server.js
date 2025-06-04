@@ -75,10 +75,7 @@ const PORT = process.env.PORT || 5000;
 async function startServer() {
   try {
     // Connect to MongoDB
-    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/netpulse', {
-      useNewUrlParser: true,
-      useUnifiedTopology: true
-    });
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/netpulse');
     
     console.log('✅ MongoDB connected successfully');
     
