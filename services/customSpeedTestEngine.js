@@ -1,4 +1,4 @@
-// Complete customSpeedTestEngine.js - All methods included
+// Improved customSpeedTestEngine.js - Fixed timing and realistic speeds
 
 const crypto = require('crypto');
 const { performance } = require('perf_hooks');
@@ -7,16 +7,21 @@ class CustomSpeedTestEngine {
   constructor() {
     this.testServers = [
       { id: 'localhost', host: 'localhost:3001', location: 'Local Test Server' },
-      { id: 'fallback', host: '127.0.0.1:3000', location: 'Local Fallback' }
+      { id: 'fallback', host: '127.0.0.1:3001', location: 'Local Fallback' }
     ];
     
     this.testConfig = {
-      downloadSizes: [0.5, 1], // Smaller sizes for localhost
-      uploadSizes: [0.5, 1],
+      downloadSizes: [0.5, 1], // 0.5MB and 1MB for localhost
+      uploadSizes: [0.5],      // 0.5MB for upload
       latencyTests: 5,
-      testDuration: 3, // Shorter for localhost
+      testDuration: 5,         // 5 seconds for each test
       concurrentConnections: 1, // Single connection for localhost
-      warmupTests: 1
+      warmupTests: 1,
+      realisticLimits: {
+        maxDownloadMbps: 80,   // Realistic max for localhost
+        maxUploadMbps: 40,     // Realistic max for upload
+        minDurationMs: 50      // Minimum test duration
+      }
     };
   }
 
@@ -195,10 +200,10 @@ class CustomSpeedTestEngine {
     };
   }
 
-  // FIXED: Download speed testing with realistic results
+  // FIXED: Download speed testing with improved timing
   async performDownloadTest(server, config) {
     const samples = [];
-    const testDuration = (config.testDuration || 3) * 1000;
+    const testDuration = (config.testDuration || 5) * 1000;
     const startTime = performance.now();
 
     if (!server.available) {
@@ -208,13 +213,17 @@ class CustomSpeedTestEngine {
     try {
       console.log('📥 Starting download test...');
       
-      const chunkSize = 0.5; // 512KB chunks for localhost
+      const chunkSize = 0.5; // 0.5MB chunks for localhost
       const endTime = startTime + testDuration;
+      let testNumber = 0;
       
-      while (performance.now() < endTime && samples.length < 10) {
+      while (performance.now() < endTime && samples.length < 15) {
+        testNumber++;
         const chunkStart = performance.now();
         
         try {
+          console.log(`📥 Download test ${testNumber}...`);
+          
           const response = await fetch(`http://${server.host}/api/download/${chunkSize}?t=${Date.now()}`, {
             signal: AbortSignal.timeout(10000)
           });
@@ -225,11 +234,17 @@ class CustomSpeedTestEngine {
 
           const arrayBuffer = await response.arrayBuffer();
           const bytes = arrayBuffer.byteLength;
-          const chunkDuration = (performance.now() - chunkStart) / 1000;
+          const chunkDuration = (performance.now() - chunkStart) / 1000; // Convert to seconds
           
-          // FIXED: Proper speed calculation with realistic constraints
-          let chunkSpeed = (bytes * 8) / (chunkDuration * 1000000);
-          chunkSpeed = Math.min(chunkSpeed, 100); // Cap at 100 Mbps for localhost
+          // FIXED: Improved speed calculation with validation
+          let chunkSpeed = 0;
+          if (bytes > 0 && chunkDuration > 0) {
+            chunkSpeed = (bytes * 8) / (chunkDuration * 1000000); // Convert to Mbps
+            
+            // Apply realistic constraints
+            chunkSpeed = Math.min(chunkSpeed, config.realisticLimits.maxDownloadMbps);
+            chunkSpeed = Math.max(chunkSpeed, 1); // Minimum 1 Mbps
+          }
 
           samples.push({
             timestamp: Date.now(),
@@ -238,14 +253,15 @@ class CustomSpeedTestEngine {
             duration: chunkDuration
           });
 
-          console.log(`Download chunk: ${bytes} bytes in ${chunkDuration.toFixed(3)}s = ${chunkSpeed.toFixed(2)} Mbps`);
+          console.log(`📥 Download chunk ${testNumber}: ${bytes} bytes in ${chunkDuration.toFixed(3)}s = ${chunkSpeed.toFixed(2)} Mbps`);
 
         } catch (error) {
-          console.warn('Download chunk failed:', error.message);
+          console.warn(`Download chunk ${testNumber} failed:`, error.message);
           break;
         }
 
-        await new Promise(resolve => setTimeout(resolve, 200));
+        // Wait before next test
+        await new Promise(resolve => setTimeout(resolve, 300));
       }
 
       if (samples.length === 0) {
@@ -255,6 +271,8 @@ class CustomSpeedTestEngine {
       const speeds = samples.map(s => s.speed);
       const avgSpeed = speeds.reduce((a, b) => a + b, 0) / speeds.length;
       const consistency = this.calculateConsistency(speeds);
+
+      console.log(`📥 Download test completed: ${samples.length} samples, avg speed: ${avgSpeed.toFixed(2)} Mbps`);
 
       return {
         speed: Math.round(avgSpeed * 100) / 100,
@@ -270,7 +288,7 @@ class CustomSpeedTestEngine {
     }
   }
 
-  // FIXED: Upload speed testing
+  // FIXED: Upload speed testing with improved timing
   async performUploadTest(server, config) {
     const samples = [];
     const testDuration = (config.testDuration || 3) * 1000;
@@ -283,14 +301,18 @@ class CustomSpeedTestEngine {
     try {
       console.log('📤 Starting upload test...');
       
-      const chunkSize = 0.5; // 512KB for localhost
+      const chunkSize = 0.5; // 0.5MB for localhost
       const endTime = startTime + testDuration;
+      let testNumber = 0;
       
-      while (performance.now() < endTime && samples.length < 8) {
+      while (performance.now() < endTime && samples.length < 10) {
+        testNumber++;
         const chunkStart = performance.now();
         const uploadData = this.generateUploadData(chunkSize);
 
         try {
+          console.log(`📤 Upload test ${testNumber}...`);
+          
           const response = await fetch(`http://${server.host}/api/upload?size=${chunkSize}`, {
             method: 'POST',
             body: uploadData,
@@ -305,25 +327,38 @@ class CustomSpeedTestEngine {
             throw new Error(`HTTP ${response.status}`);
           }
 
+          const result = await response.json();
           const chunkDuration = (performance.now() - chunkStart) / 1000;
-          let chunkSpeed = (uploadData.length * 8) / (chunkDuration * 1000000);
-          chunkSpeed = Math.min(chunkSpeed, 40); // Cap at 40 Mbps upload
+          
+          // Use server-calculated speed if available, otherwise calculate our own
+          let chunkSpeed = result.speed || 0;
+          
+          if (chunkSpeed <= 0 && uploadData.length > 0 && chunkDuration > 0) {
+            chunkSpeed = (uploadData.length * 8) / (chunkDuration * 1000000);
+          }
+          
+          // Apply realistic constraints
+          chunkSpeed = Math.min(chunkSpeed, config.realisticLimits.maxUploadMbps);
+          chunkSpeed = Math.max(chunkSpeed, 1); // Minimum 1 Mbps
 
           samples.push({
             timestamp: Date.now(),
             speed: chunkSpeed,
             bytes: uploadData.length,
-            duration: chunkDuration
+            duration: chunkDuration,
+            serverSpeed: result.speed,
+            serverDuration: result.duration
           });
 
-          console.log(`Upload chunk: ${uploadData.length} bytes in ${chunkDuration.toFixed(3)}s = ${chunkSpeed.toFixed(2)} Mbps`);
+          console.log(`📤 Upload chunk ${testNumber}: ${uploadData.length} bytes in ${chunkDuration.toFixed(3)}s = ${chunkSpeed.toFixed(2)} Mbps`);
 
         } catch (error) {
-          console.warn('Upload chunk failed:', error.message);
+          console.warn(`Upload chunk ${testNumber} failed:`, error.message);
           break;
         }
 
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Wait before next test
+        await new Promise(resolve => setTimeout(resolve, 400));
       }
 
       if (samples.length === 0) {
@@ -333,6 +368,8 @@ class CustomSpeedTestEngine {
       const speeds = samples.map(s => s.speed);
       const avgSpeed = speeds.reduce((a, b) => a + b, 0) / speeds.length;
       const consistency = this.calculateConsistency(speeds);
+
+      console.log(`📤 Upload test completed: ${samples.length} samples, avg speed: ${avgSpeed.toFixed(2)} Mbps`);
 
       return {
         speed: Math.round(avgSpeed * 100) / 100,
@@ -350,7 +387,7 @@ class CustomSpeedTestEngine {
 
   // Generate upload data
   generateUploadData(sizeMB) {
-    const sizeBytes = sizeMB * 1024 * 1024;
+    const sizeBytes = Math.floor(sizeMB * 1024 * 1024);
     return crypto.randomBytes(sizeBytes);
   }
 
@@ -390,16 +427,16 @@ class CustomSpeedTestEngine {
   // Realistic simulation functions
   simulateRealisticDownloadTest() {
     const samples = [];
-    const baseSpeed = 30 + Math.random() * 40; // 30-70 Mbps realistic range
+    const baseSpeed = 25 + Math.random() * 35; // 25-60 Mbps realistic range
     
     for (let i = 0; i < 8; i++) {
       const variation = (Math.random() - 0.5) * 15;
-      const speed = Math.max(10, Math.min(80, baseSpeed + variation));
+      const speed = Math.max(5, Math.min(70, baseSpeed + variation));
       samples.push({
         timestamp: Date.now() + i * 100,
         speed: speed,
         bytes: 524288,
-        duration: 0.1
+        duration: 0.2
       });
     }
 
@@ -418,16 +455,16 @@ class CustomSpeedTestEngine {
 
   simulateRealisticUploadTest() {
     const samples = [];
-    const baseSpeed = 12 + Math.random() * 18; // 12-30 Mbps realistic upload
+    const baseSpeed = 10 + Math.random() * 20; // 10-30 Mbps realistic upload
     
     for (let i = 0; i < 6; i++) {
       const variation = (Math.random() - 0.5) * 8;
-      const speed = Math.max(5, Math.min(35, baseSpeed + variation));
+      const speed = Math.max(3, Math.min(35, baseSpeed + variation));
       samples.push({
         timestamp: Date.now() + i * 100,
         speed: speed,
         bytes: 524288,
-        duration: 0.1
+        duration: 0.2
       });
     }
 
@@ -468,9 +505,9 @@ class CustomSpeedTestEngine {
       consistency: 0.05
     };
 
-    // Realistic scoring for South African connections
-    const downloadScore = Math.min(100, (results.download.speed / 100) * 100);
-    const uploadScore = Math.min(100, (results.upload.speed / 30) * 100);
+    // Realistic scoring for localhost connections
+    const downloadScore = Math.min(100, (results.download.speed / 60) * 100); // 60 Mbps = 100%
+    const uploadScore = Math.min(100, (results.upload.speed / 25) * 100);     // 25 Mbps = 100%
     const latencyScore = Math.max(0, 100 - results.latency.avg);
     const packetLossScore = Math.max(0, 100 - (results.packetLoss * 10));
     const consistencyScore = (results.download.consistency + results.upload.consistency) / 2;

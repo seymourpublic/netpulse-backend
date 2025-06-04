@@ -1,6 +1,8 @@
+// Updated speedTest.js route with enhanced network info
+
 const express = require('express');
 const { SpeedTest, ISP, UserSession } = require('../models');
-const { getLocationFromIP } = require('../services/locationService');
+const { getEnhancedNetworkInfo } = require('../services/locationService');
 const { calculateQualityScore } = require('../utils/scoring');
 const router = express.Router();
 const CustomSpeedTestEngine = require('../services/customSpeedTestEngine');
@@ -8,35 +10,22 @@ const CustomSpeedTestEngine = require('../services/customSpeedTestEngine');
 // Add request logging middleware
 router.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  console.log('Headers:', req.headers);
-  console.log('Body:', req.body);
   next();
 });
 
-// Get network info endpoint
+// ENHANCED: Get network info endpoint with better IP detection
 router.get('/network-info', async (req, res) => {
   try {
-    const clientIP = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || '127.0.0.1';
-    console.log('Getting network info for IP:', clientIP);
+    console.log('🌍 Getting enhanced network info...');
     
-    const location = await getLocationFromIP(clientIP);
+    const networkInfo = await getEnhancedNetworkInfo(req);
     
-    res.json({
-      ip: clientIP,
-      isp: location.isp || 'Unknown ISP',
-      location: {
-        city: location.city || 'Unknown',
-        region: location.region || 'Unknown',
-        country: location.country || 'Unknown',
-        lat: location.lat || 0,
-        lng: location.lng || 0
-      },
-      connectionType: 'Unknown', // Could be enhanced with device detection
-      timestamp: new Date().toISOString()
-    });
+    console.log('📊 Network info result:', networkInfo);
+    
+    res.json(networkInfo);
 
   } catch (error) {
-    console.error('Network info error:', error);
+    console.error('❌ Network info error:', error);
     res.status(500).json({ 
       error: 'Failed to get network info',
       details: error.message 
@@ -44,10 +33,10 @@ router.get('/network-info', async (req, res) => {
   }
 });
 
-// Run comprehensive speed test
+// Run comprehensive speed test (existing code with minor enhancements)
 router.post('/comprehensive', async (req, res) => {
   try {
-    console.log('Starting comprehensive speed test...');
+    console.log('🚀 Starting comprehensive speed test...');
     
     // Parse request body with validation
     let requestBody = {};
@@ -66,31 +55,27 @@ router.post('/comprehensive', async (req, res) => {
     }
 
     const { sessionToken, testConfig = {} } = requestBody;
-    const clientIP = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'] || '127.0.0.1';
     
-    console.log('Request details:', {
-      sessionToken,
-      testConfig,
-      clientIP,
-      userAgent: req.headers['user-agent']
-    });
-
     // Generate session token if not provided
     const finalSessionToken = sessionToken || `netpulse-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    // Get location information
-    let location;
+    // ENHANCED: Get network information using new service
+    let networkInfo;
     try {
-      location = await getLocationFromIP(clientIP);
+      networkInfo = await getEnhancedNetworkInfo(req);
     } catch (locationError) {
-      console.warn('Location detection failed:', locationError);
-      location = {
-        country: 'ZA',
-        region: 'Gauteng',
-        city: 'Johannesburg',
-        lat: -26.2041,
-        lng: 28.0473,
-        timezone: 'Africa/Johannesburg'
+      console.warn('Enhanced location detection failed:', locationError);
+      networkInfo = {
+        ip: '127.0.0.1',
+        isp: 'Unknown ISP',
+        location: {
+          country: 'ZA',
+          region: 'Gauteng',
+          city: 'Johannesburg',
+          lat: -26.2041,
+          lng: 28.0473
+        },
+        connectionType: 'ethernet'
       };
     }
 
@@ -101,22 +86,21 @@ router.post('/comprehensive', async (req, res) => {
       if (!session) {
         session = new UserSession({
           sessionToken: finalSessionToken,
-          ipAddress: clientIP,
+          ipAddress: networkInfo.ip,
           userAgent: req.headers['user-agent'] || 'Unknown',
-          location: location
+          location: networkInfo.location
         });
         await session.save();
-        console.log('Created new session:', session._id);
+        console.log('✅ Created new session:', session._id);
       } else {
-        console.log('Found existing session:', session._id);
+        console.log('✅ Found existing session:', session._id);
       }
     } catch (sessionError) {
       console.error('Session error:', sessionError);
-      // Continue without session for now
       session = { _id: null };
     }
 
-    // Initialize speed test engine with error handling
+    // Initialize speed test engine
     let speedTestEngine;
     try {
       speedTestEngine = new CustomSpeedTestEngine();
@@ -128,22 +112,21 @@ router.post('/comprehensive', async (req, res) => {
       });
     }
     
-    // Run comprehensive speed test with timeout
+    // Run comprehensive speed test
     let testResult;
     try {
-      console.log('Running speed test with config:', testConfig);
+      console.log('🏃 Running speed test with config:', testConfig);
       
-      // Set a timeout for the test
-      const testPromise = speedTestEngine.runComprehensiveTest(clientIP, testConfig);
+      const testPromise = speedTestEngine.runComprehensiveTest(networkInfo.ip, testConfig);
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Speed test timeout after 60 seconds')), 60000)
       );
       
       testResult = await Promise.race([testPromise, timeoutPromise]);
-      console.log('Speed test completed successfully');
+      console.log('✅ Speed test completed successfully');
       
     } catch (testError) {
-      console.error('Speed test execution failed:', testError);
+      console.error('❌ Speed test execution failed:', testError);
       return res.status(500).json({ 
         error: 'Speed test execution failed',
         details: testError.message 
@@ -153,22 +136,22 @@ router.post('/comprehensive', async (req, res) => {
     // Get or create ISP record
     let isp;
     try {
-      const ispName = location.isp || testResult.networkInfo?.isp || 'Unknown ISP';
+      const ispName = networkInfo.isp || testResult.networkInfo?.isp || 'Unknown ISP';
       
       isp = await ISP.findOne({ name: ispName });
       if (!isp) {
         isp = new ISP({
           name: ispName,
-          country: location.country || 'Unknown',
-          region: location.region || 'Unknown'
+          displayName: ispName,
+          country: networkInfo.location.country || 'Unknown',
+          region: networkInfo.location.region || 'Unknown'
         });
         await isp.save();
-        console.log('Created new ISP record:', isp._id);
+        console.log('✅ Created new ISP record:', isp._id);
       }
     } catch (ispError) {
       console.error('ISP creation error:', ispError);
-      // Create a default ISP record
-      isp = { _id: null, name: 'Unknown ISP' };
+      isp = { _id: null, name: networkInfo.isp || 'Unknown ISP' };
     }
 
     // Calculate quality score with fallback
@@ -177,7 +160,6 @@ router.post('/comprehensive', async (req, res) => {
       if (testResult.results && testResult.results.quality) {
         qualityScore = testResult.results.quality.score || 0;
       } else {
-        // Fallback quality calculation
         const downloadScore = Math.min(100, (testResult.results?.download?.speed || 0) / 10);
         const uploadScore = Math.min(100, (testResult.results?.upload?.speed || 0) / 5);
         const latencyScore = Math.max(0, 100 - (testResult.results?.latency?.avg || 100));
@@ -197,28 +179,26 @@ router.post('/comprehensive', async (req, res) => {
     };
 
     try {
-      // Extract just the speed values from samples, not the full objects
       if (testResult.results?.download?.samples && Array.isArray(testResult.results.download.samples)) {
         rawResults.downloadSamples = testResult.results.download.samples
           .map(sample => typeof sample === 'object' ? sample.speed : sample)
           .filter(speed => typeof speed === 'number' && !isNaN(speed))
-          .slice(0, 100); // Limit to 100 samples to avoid document size issues
+          .slice(0, 100);
       }
 
       if (testResult.results?.upload?.samples && Array.isArray(testResult.results.upload.samples)) {
         rawResults.uploadSamples = testResult.results.upload.samples
           .map(sample => typeof sample === 'object' ? sample.speed : sample)
           .filter(speed => typeof speed === 'number' && !isNaN(speed))
-          .slice(0, 100); // Limit to 100 samples
+          .slice(0, 100);
       }
 
       if (testResult.results?.latency?.samples && Array.isArray(testResult.results.latency.samples)) {
         rawResults.latencySamples = testResult.results.latency.samples
           .filter(latency => typeof latency === 'number' && !isNaN(latency))
-          .slice(0, 50); // Limit to 50 samples
+          .slice(0, 50);
       }
 
-      // Store a simplified version of comprehensive results (not the full object)
       rawResults.comprehensive = {
         serverId: testResult.server?.id,
         duration: testResult.metadata?.duration,
@@ -226,15 +206,8 @@ router.post('/comprehensive', async (req, res) => {
         reliability: testResult.metadata?.reliability || 0
       };
 
-      console.log('Prepared raw results:', {
-        downloadSamples: rawResults.downloadSamples.length,
-        uploadSamples: rawResults.uploadSamples.length,
-        latencySamples: rawResults.latencySamples.length
-      });
-
     } catch (rawError) {
       console.warn('Raw results preparation failed:', rawError);
-      // Use empty arrays as fallback
       rawResults = {
         downloadSamples: [],
         uploadSamples: [],
@@ -243,7 +216,7 @@ router.post('/comprehensive', async (req, res) => {
       };
     }
 
-    // Save comprehensive test result with proper data types
+    // Save comprehensive test result
     let speedTest;
     try {
       const speedTestData = {
@@ -253,37 +226,28 @@ router.post('/comprehensive', async (req, res) => {
         jitter: Number(testResult.results?.latency?.jitter) || 0,
         packetLoss: Number(testResult.results?.packetLoss) || 0,
         testDuration: Number(testResult.metadata?.duration) || 0,
-        ipAddress: String(clientIP),
+        ipAddress: String(networkInfo.ip),
         userAgent: String(req.headers['user-agent'] || 'Unknown'),
         deviceInfo: testResult.deviceInfo || {
           cpu: 'Unknown',
           memory: 'Unknown',
           os: 'Unknown'
         },
-        networkType: testResult.networkInfo?.type || 'unknown',
+        networkType: networkInfo.connectionType || 'unknown',
         location: {
-          city: String(location.city || 'Unknown'),
-          region: String(location.region || 'Unknown'),
-          country: String(location.country || 'Unknown'),
-          lat: Number(location.lat) || 0,
-          lng: Number(location.lng) || 0,
-          timezone: String(location.timezone || 'UTC')
+          city: String(networkInfo.location.city || 'Unknown'),
+          region: String(networkInfo.location.region || 'Unknown'),
+          country: String(networkInfo.location.country || 'Unknown'),
+          lat: Number(networkInfo.location.lat) || 0,
+          lng: Number(networkInfo.location.lng) || 0,
+          timezone: String(networkInfo.location.timezone || 'UTC')
         },
         testServerId: String(testResult.server?.id || 'unknown'),
-        rawResults: rawResults, // This now contains properly formatted arrays
+        rawResults: rawResults,
         qualityScore: Number(qualityScore),
         ispId: isp._id,
         sessionId: session._id
       };
-
-      console.log('Attempting to save speed test with data types:', {
-        downloadSpeed: typeof speedTestData.downloadSpeed,
-        uploadSpeed: typeof speedTestData.uploadSpeed,
-        latency: typeof speedTestData.latency,
-        rawResultsType: typeof speedTestData.rawResults,
-        downloadSamplesLength: speedTestData.rawResults.downloadSamples.length,
-        uploadSamplesLength: speedTestData.rawResults.uploadSamples.length
-      });
 
       speedTest = new SpeedTest(speedTestData);
       await speedTest.save();
@@ -291,9 +255,6 @@ router.post('/comprehensive', async (req, res) => {
 
     } catch (saveError) {
       console.error('❌ Failed to save speed test result:', saveError);
-      console.error('Error details:', saveError.message);
-      
-      // Continue without saving for now, but log the error
       speedTest = { _id: 'unsaved' };
     }
 
@@ -314,7 +275,7 @@ router.post('/comprehensive', async (req, res) => {
       });
     }
 
-    // Prepare response with safe defaults
+    // Prepare response
     const response = {
       testId: speedTest._id,
       results: {
@@ -341,16 +302,16 @@ router.post('/comprehensive', async (req, res) => {
         reliability: testResult.metadata?.reliability || 0,
         testStages: testResult.metadata?.testStages || []
       },
-      location: location,
+      location: networkInfo.location,
       isp: isp.name,
       timestamp: new Date().toISOString()
     };
 
-    console.log('Sending response:', response);
+    console.log('✅ Sending response with enhanced network info');
     res.json(response);
 
   } catch (error) {
-    console.error('Comprehensive speed test error:', error);
+    console.error('❌ Comprehensive speed test error:', error);
     res.status(500).json({ 
       error: 'Failed to run comprehensive speed test',
       details: error.message,
@@ -359,7 +320,7 @@ router.post('/comprehensive', async (req, res) => {
   }
 });
 
-// Get test history
+// Get test history (existing code)
 router.get('/history', async (req, res) => {
   try {
     const { sessionToken, limit = 50, offset = 0 } = req.query;
@@ -381,7 +342,6 @@ router.get('/history', async (req, res) => {
 
     const total = await SpeedTest.countDocuments({ sessionId: session._id });
 
-    // Transform tests for frontend compatibility
     const transformedTests = tests.map(test => ({
       _id: test._id,
       timestamp: test.createdAt,
@@ -411,7 +371,7 @@ router.get('/history', async (req, res) => {
   }
 });
 
-// Get test details
+// Get test details (existing code)
 router.get('/:testId', async (req, res) => {
   try {
     const test = await SpeedTest.findById(req.params.testId)
@@ -433,7 +393,7 @@ router.get('/:testId', async (req, res) => {
   }
 });
 
-// Update ISP statistics helper function
+// Helper function to update ISP statistics
 async function updateISPStats(ispId) {
   try {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -479,12 +439,10 @@ async function updateISPStats(ispId) {
 function calculateReliabilityScore(speeds, packetLosses) {
   if (!speeds || speeds.length === 0) return 0;
 
-  // Calculate consistency (lower variance = higher score)
   const mean = speeds.reduce((a, b) => a + b, 0) / speeds.length;
   const variance = speeds.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / speeds.length;
   const consistencyScore = Math.max(0, 100 - (variance / mean) * 100);
 
-  // Calculate packet loss penalty
   const avgPacketLoss = packetLosses.reduce((a, b) => a + b, 0) / packetLosses.length;
   const packetLossScore = Math.max(0, 100 - avgPacketLoss * 10);
 

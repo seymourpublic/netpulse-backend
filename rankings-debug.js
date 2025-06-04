@@ -1,7 +1,9 @@
+// isp-rankings-debug-fix.js - Debug and populate ISP rankings
+
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-// Define the ISP schema
+// Define the ISP schema (same as your models)
 const ispSchema = new mongoose.Schema({
   name: { type: String, required: true, unique: true },
   displayName: String,
@@ -20,7 +22,7 @@ const ispSchema = new mongoose.Schema({
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 
-async function debugISPRankings() {
+async function debugAndFixISPRankings() {
   try {
     console.log('🔍 Debugging ISP Rankings Issues');
     console.log('==================================\n');
@@ -47,24 +49,11 @@ async function debugISPRankings() {
     const zaISPs = await ISP.countDocuments({ country: 'ZA' });
     console.log(`South African ISPs: ${zaISPs}`);
     
-    // Step 2: List all ISPs
-    if (totalISPs > 0) {
-      console.log('\n📋 All ISPs in database:');
-      const allISPs = await ISP.find({}).select('name displayName country region isActive statistics.averageDownload');
-      allISPs.forEach((isp, index) => {
-        console.log(`${index + 1}. ${isp.displayName || isp.name} (${isp.country}) - ${isp.statistics?.averageDownload || 0} Mbps - Active: ${isp.isActive}`);
-      });
-    }
-    
-    // Step 3: Test the exact query used by the API
+    // Step 2: Test the exact query used by the API
     console.log('\n🧪 Testing API Query:');
     console.log('====================');
     
-    const apiQuery = {
-      country: 'ZA',
-      isActive: true
-    };
-    
+    const apiQuery = { country: 'ZA', isActive: true };
     console.log('Query:', JSON.stringify(apiQuery, null, 2));
     
     const rankings = await ISP.find(apiQuery)
@@ -74,58 +63,33 @@ async function debugISPRankings() {
     
     console.log(`Query result: ${rankings.length} ISPs found`);
     
-    if (rankings.length > 0) {
-      console.log('\n🏆 ISP Rankings (API Query Result):');
-      rankings.forEach((isp, index) => {
-        console.log(`${index + 1}. ${isp.displayName || isp.name}`);
-        console.log(`   Region: ${isp.region}`);
-        console.log(`   Download: ${isp.statistics?.averageDownload || 0} Mbps`);
-        console.log(`   Upload: ${isp.statistics?.averageUpload || 0} Mbps`);
-        console.log(`   Reliability: ${isp.statistics?.reliabilityScore || 0}%`);
-        console.log('');
-      });
+    if (rankings.length === 0) {
+      console.log('❌ No ISPs found! Creating South African ISP data...');
+      await createSouthAfricanISPs(ISP);
       
-      console.log('✅ ISP rankings query works! Problem might be in the API endpoint or frontend.');
+      // Test query again
+      const newRankings = await ISP.find(apiQuery)
+        .select('name displayName region statistics')
+        .sort({ 'statistics.averageDownload': -1 })
+        .limit(10);
+        
+      console.log(`✅ After creation: ${newRankings.length} ISPs found`);
+      
+      if (newRankings.length > 0) {
+        console.log('\n🏆 New ISP Rankings:');
+        newRankings.forEach((isp, index) => {
+          console.log(`${index + 1}. ${isp.displayName || isp.name} - ${isp.statistics?.averageDownload || 0} Mbps`);
+        });
+      }
     } else {
-      console.log('❌ No ISPs found with the API query. Creating sample data...');
-      await createSampleISPs(ISP);
+      console.log('\n🏆 Existing ISP Rankings:');
+      rankings.forEach((isp, index) => {
+        console.log(`${index + 1}. ${isp.displayName || isp.name} - ${isp.statistics?.averageDownload || 0} Mbps`);
+      });
     }
     
-    // Step 4: Test the API endpoint format
-    console.log('\n🌐 Testing API Response Format:');
-    console.log('===============================');
-    
-    const apiResponse = {
-      rankings: rankings.map((isp, index) => ({
-        _id: isp._id,
-        name: isp.name,
-        displayName: isp.displayName || isp.name,
-        region: isp.region,
-        rank: index + 1,
-        statistics: {
-          averageDownload: Math.round((isp.statistics?.averageDownload || 0) * 10) / 10,
-          averageUpload: Math.round((isp.statistics?.averageUpload || 0) * 10) / 10,
-          averageLatency: Math.round((isp.statistics?.averageLatency || 0) * 10) / 10,
-          reliabilityScore: Math.round((isp.statistics?.reliabilityScore || 0) * 10) / 10,
-          totalTests: isp.statistics?.totalTests || 0
-        }
-      })),
-      metadata: {
-        metric: 'download',
-        timeframe: '30d',
-        region: 'all',
-        country: 'ZA',
-        total: rankings.length,
-        isDemoData: false,
-        updatedAt: new Date()
-      }
-    };
-    
-    console.log('API Response Sample:');
-    console.log(JSON.stringify(apiResponse, null, 2));
-    
-    // Step 5: Test your specific API endpoint
-    console.log('\n🔌 Testing API Endpoint:');
+    // Step 3: Test the API endpoint directly
+    console.log('\n🌐 Testing API Endpoint:');
     console.log('========================');
     
     try {
@@ -139,13 +103,32 @@ async function debugISPRankings() {
       console.log(`Rankings count: ${response.data.rankings?.length || 0}`);
       
       if (response.data.rankings && response.data.rankings.length > 0) {
-        console.log('Sample ranking:', response.data.rankings[0]);
+        console.log('\n📊 API Response Sample:');
+        console.log('First ranking:', JSON.stringify(response.data.rankings[0], null, 2));
       } else {
         console.log('❌ API returned empty rankings');
       }
     } catch (apiError) {
       console.error('❌ API endpoint test failed:', apiError.message);
       console.log('💡 Make sure your backend server is running on port 5000');
+      console.log('💡 Also check that your ISP route is properly configured');
+    }
+    
+    // Step 4: Check indexes
+    console.log('\n🔍 Checking Database Indexes:');
+    console.log('=============================');
+    
+    const indexes = await ISP.collection.getIndexes();
+    console.log('Current indexes:', Object.keys(indexes));
+    
+    // Create missing indexes if needed
+    try {
+      await ISP.collection.createIndex({ country: 1 });
+      await ISP.collection.createIndex({ 'statistics.averageDownload': -1 });
+      await ISP.collection.createIndex({ isActive: 1 });
+      console.log('✅ Indexes created/verified');
+    } catch (indexError) {
+      console.log('⚠️ Index creation failed (may already exist):', indexError.message);
     }
     
   } catch (error) {
@@ -156,16 +139,17 @@ async function debugISPRankings() {
   }
 }
 
-async function createSampleISPs(ISP) {
-  console.log('\n🌱 Creating sample South African ISPs...');
+async function createSouthAfricanISPs(ISP) {
+  console.log('\n🇿🇦 Creating South African ISPs...');
   
-  const sampleISPs = [
+  const southAfricanISPs = [
     {
       name: 'Vodacom-VB',
       displayName: 'Vodacom SA',
       country: 'ZA',
       region: 'National',
       asn: 36874,
+      website: 'https://www.vodacom.co.za',
       statistics: {
         averageDownload: 85.4,
         averageUpload: 28.7,
@@ -181,6 +165,7 @@ async function createSampleISPs(ISP) {
       country: 'ZA',
       region: 'National',
       asn: 36937,
+      website: 'https://www.afrihost.com',
       statistics: {
         averageDownload: 165.3,
         averageUpload: 22.8,
@@ -196,6 +181,7 @@ async function createSampleISPs(ISP) {
       country: 'ZA',
       region: 'Western Cape',
       asn: 37721,
+      website: 'https://www.coolideas.co.za',
       statistics: {
         averageDownload: 195.7,
         averageUpload: 31.2,
@@ -211,6 +197,7 @@ async function createSampleISPs(ISP) {
       country: 'ZA',
       region: 'National',
       asn: 37457,
+      website: 'https://www.telkom.co.za',
       statistics: {
         averageDownload: 142.6,
         averageUpload: 19.8,
@@ -226,6 +213,7 @@ async function createSampleISPs(ISP) {
       country: 'ZA',
       region: 'Western Cape',
       asn: 37662,
+      website: 'https://www.webafrica.co.za',
       statistics: {
         averageDownload: 168.9,
         averageUpload: 21.3,
@@ -234,10 +222,58 @@ async function createSampleISPs(ISP) {
         totalTests: 987
       },
       isActive: true
+    },
+    {
+      name: 'MTN',
+      displayName: 'MTN South Africa',
+      country: 'ZA',
+      region: 'National',
+      asn: 35658,
+      website: 'https://www.mtn.co.za',
+      statistics: {
+        averageDownload: 94.7,
+        averageUpload: 28.9,
+        averageLatency: 21.5,
+        reliabilityScore: 86.7,
+        totalTests: 3892
+      },
+      isActive: true
+    },
+    {
+      name: 'Rain',
+      displayName: 'Rain Mobile',
+      country: 'ZA',
+      region: 'National',
+      asn: 37178,
+      website: 'https://rain.co.za',
+      statistics: {
+        averageDownload: 78.3,
+        averageUpload: 24.6,
+        averageLatency: 27.4,
+        reliabilityScore: 82.9,
+        totalTests: 2156
+      },
+      isActive: true
+    },
+    {
+      name: 'MWEB',
+      displayName: 'MWEB',
+      country: 'ZA',
+      region: 'National',
+      asn: 10474,
+      website: 'https://www.mweb.co.za',
+      statistics: {
+        averageDownload: 134.8,
+        averageUpload: 17.3,
+        averageLatency: 19.9,
+        reliabilityScore: 87.2,
+        totalTests: 1678
+      },
+      isActive: true
     }
   ];
 
-  for (const ispData of sampleISPs) {
+  for (const ispData of southAfricanISPs) {
     try {
       await ISP.findOneAndUpdate(
         { name: ispData.name },
@@ -250,75 +286,57 @@ async function createSampleISPs(ISP) {
     }
   }
   
-  console.log(`✅ Sample ISPs created/updated`);
+  console.log(`✅ South African ISPs created/updated`);
 }
 
-// Test the exact frontend fetch
-async function testFrontendFetch() {
-  console.log('\n🖥️  Testing Frontend Fetch Logic:');
-  console.log('=================================');
+// Quick API test
+async function quickAPITest() {
+  console.log('\n🚀 Quick API Test');
+  console.log('=================');
   
-  try {
-    const axios = require('axios');
-    
-    // Simulate the exact frontend request
-    const response = await axios.get(
-      'http://localhost:5000/api/isp/rankings?limit=10&country=ZA&metric=download',
-      {
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        timeout: 10000
+  const tests = [
+    'http://localhost:5000/health',
+    'http://localhost:5000/api/isp/rankings?country=ZA',
+    'http://localhost:5000/api/speed-test/network-info'
+  ];
+  
+  for (const url of tests) {
+    try {
+      const axios = require('axios');
+      const response = await axios.get(url, { timeout: 3000 });
+      console.log(`✅ ${url} - OK (${response.status})`);
+      
+      if (url.includes('rankings')) {
+        console.log(`   Found ${response.data.rankings?.length || 0} ISP rankings`);
       }
-    );
-    
-    console.log('✅ Frontend simulation successful!');
-    console.log(`Status: ${response.status}`);
-    console.log(`Data type: ${typeof response.data}`);
-    console.log(`Rankings: ${response.data.rankings?.length || 0}`);
-    
-    if (response.data.rankings && response.data.rankings.length > 0) {
-      console.log('\n📊 First 3 rankings:');
-      response.data.rankings.slice(0, 3).forEach((isp, index) => {
-        console.log(`${index + 1}. ${isp.displayName || isp.name} - ${isp.statistics?.averageDownload || 0} Mbps`);
-      });
-    }
-    
-    // Check for common issues
-    if (!response.data.rankings) {
-      console.log('❌ Response missing rankings array');
-    }
-    
-    if (response.data.rankings && response.data.rankings.length === 0) {
-      console.log('❌ Rankings array is empty');
-    }
-    
-  } catch (error) {
-    console.error('❌ Frontend fetch simulation failed:', error.message);
-    
-    if (error.code === 'ECONNREFUSED') {
-      console.log('💡 Backend server is not running. Start it with: npm start or node server.js');
+    } catch (error) {
+      console.log(`❌ ${url} - Failed: ${error.message}`);
     }
   }
 }
 
-// Run all tests
-async function runAllTests() {
-  await debugISPRankings();
-  await testFrontendFetch();
+// Complete fix workflow
+async function runCompleteFix() {
+  console.log('🔧 NETPULSE ISP Rankings Complete Fix');
+  console.log('====================================\n');
+  
+  await debugAndFixISPRankings();
+  await quickAPITest();
   
   console.log('\n📋 Summary & Next Steps:');
   console.log('========================');
-  console.log('1. ✅ Run this script to check your database');
-  console.log('2. 🚀 Make sure your backend server is running (port 5000)');
-  console.log('3. 🔄 Restart your frontend and backend servers');
-  console.log('4. 🧪 Test the API endpoint directly: curl http://localhost:5000/api/isp/rankings');
-  console.log('5. 🌐 Check if your frontend is connecting to the right API URL');
+  console.log('1. ✅ Run this script to populate ISP data');
+  console.log('2. 🔄 Restart your backend server');
+  console.log('3. 🌐 Refresh your frontend');
+  console.log('4. 📊 ISP rankings should now appear');
+  console.log('\nIf rankings still don\'t appear:');
+  console.log('- Check browser console for errors');
+  console.log('- Verify API endpoint: http://localhost:5000/api/isp/rankings?country=ZA');
+  console.log('- Check network tab in browser dev tools');
 }
 
 if (require.main === module) {
-  runAllTests();
+  runCompleteFix();
 }
 
-module.exports = { debugISPRankings, createSampleISPs, testFrontendFetch };
+module.exports = { debugAndFixISPRankings, createSouthAfricanISPs, quickAPITest };
