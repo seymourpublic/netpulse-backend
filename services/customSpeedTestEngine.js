@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { performance } = require('perf_hooks');
+const fetch = require('node-fetch');
 
 class CustomSpeedTestEngine {
   constructor() {

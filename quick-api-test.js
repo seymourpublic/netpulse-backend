@@ -133,7 +133,6 @@ if (require.main === module) {
 module.exports = { quickAPITest, testISPEndpointDetailed, testSpeedCalculation };(`❌ Health check failed: ${error.message}`);
     console.log('💡 Make sure your backend server is running!');
     return;
-  }
   
   // Test 2: ISP Rankings
   console.log('\n2️⃣ Testing ISP Rankings...');

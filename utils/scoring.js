@@ -98,7 +98,7 @@ function calculateSpeedConsistency(speeds) {
     const variance = speeds.reduce((acc, speed) => acc + Math.pow(speed - mean, 2), 0) / speeds.length;
     const stdDev = Math.sqrt(variance);
     
-    // Convert to consistency score (0-100, higher is better)
+    // Convert to consistency score (0-100)
     const coefficientOfVariation = stdDev / mean;
     const consistency = Math.max(0, 100 - (coefficientOfVariation * 100));
     
